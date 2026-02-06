@@ -133,17 +133,30 @@ function scanInstalledSkills(): SkillFile[] {
 
 function scanDirectory(
   dir: string,
-  source: "global" | "project" | "plugin"
+  source: "global" | "project" | "plugin",
+  prefix = ""
 ): SkillFile[] {
   const skills: SkillFile[] = [];
   if (!fs.existsSync(dir)) return skills;
 
   try {
-    const files = fs.readdirSync(dir);
-    for (const file of files) {
-      if (!file.endsWith(".md")) continue;
-      const name = file.replace(/\.md$/, "");
-      const filePath = path.join(dir, file);
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+
+      const fullPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        // Recurse into subdirectories (e.g. ~/.claude/commands/review/pr.md)
+        const subPrefix = prefix ? `${prefix}:${entry.name}` : entry.name;
+        skills.push(...scanDirectory(fullPath, source, subPrefix));
+        continue;
+      }
+
+      if (!entry.name.endsWith(".md")) continue;
+      const baseName = entry.name.replace(/\.md$/, "");
+      const name = prefix ? `${prefix}:${baseName}` : baseName;
+      const filePath = fullPath;
       const content = fs.readFileSync(filePath, "utf-8");
       const firstLine = content.split("\n")[0]?.trim() || "";
       const description = firstLine.startsWith("#")
@@ -161,8 +174,15 @@ export async function GET(request: NextRequest) {
   try {
     // Accept optional cwd query param for project-level skills
     const cwd = request.nextUrl.searchParams.get("cwd") || undefined;
-    const globalSkills = scanDirectory(getGlobalCommandsDir(), "global");
-    const projectSkills = scanDirectory(getProjectCommandsDir(cwd), "project");
+    const globalDir = getGlobalCommandsDir();
+    const projectDir = getProjectCommandsDir(cwd);
+
+    console.log(`[skills] Scanning global: ${globalDir} (exists: ${fs.existsSync(globalDir)})`);
+    console.log(`[skills] Scanning project: ${projectDir} (exists: ${fs.existsSync(projectDir)})`);
+    console.log(`[skills] HOME=${process.env.HOME}, homedir=${os.homedir()}`);
+
+    const globalSkills = scanDirectory(globalDir, "global");
+    const projectSkills = scanDirectory(projectDir, "project");
     const installedSkills = scanInstalledSkills();
 
     // Scan installed plugin skills
@@ -171,8 +191,12 @@ export async function GET(request: NextRequest) {
       pluginSkills.push(...scanDirectory(dir, "plugin"));
     }
 
-    return NextResponse.json({ skills: [...globalSkills, ...projectSkills, ...installedSkills, ...pluginSkills] });
+    const all = [...globalSkills, ...projectSkills, ...installedSkills, ...pluginSkills];
+    console.log(`[skills] Found: global=${globalSkills.length}, project=${projectSkills.length}, installed=${installedSkills.length}, plugin=${pluginSkills.length}`);
+
+    return NextResponse.json({ skills: all });
   } catch (error) {
+    console.error('[skills] Error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to load skills" },
       { status: 500 }

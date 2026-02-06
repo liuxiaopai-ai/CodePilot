@@ -66,6 +66,25 @@ export function ChatView({ sessionId, initialMessages = [], modelName, initialMo
     }
   }, [sessionId, setWorkingDirectory, setPanelOpen]);
 
+  // Ref to keep accumulated streaming content in sync regardless of React batching
+  const accumulatedRef = useRef('');
+
+  // Re-sync streaming content when the window regains visibility (Electron/browser tab switch)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && accumulatedRef.current) {
+        setStreamingContent(accumulatedRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    // Also handle Electron-specific focus events
+    window.addEventListener('focus', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
+  }, []);
+
   const initializedRef = useRef(false);
   useEffect(() => {
     if (initialMessages.length > 0 && !initializedRef.current) {
@@ -138,6 +157,7 @@ export function ChatView({ sessionId, initialMessages = [], modelName, initialMo
       setIsStreaming(true);
       setStreamingSessionId(sessionId);
       setStreamingContent('');
+      accumulatedRef.current = '';
       setToolUses([]);
       setToolResults([]);
       setStatusText(undefined);
@@ -185,6 +205,7 @@ export function ChatView({ sessionId, initialMessages = [], modelName, initialMo
               switch (event.type) {
                 case 'text': {
                   accumulated += event.data;
+                  accumulatedRef.current = accumulated;
                   setStreamingContent(accumulated);
                   break;
                 }
@@ -289,6 +310,7 @@ export function ChatView({ sessionId, initialMessages = [], modelName, initialMo
 
                 case 'error': {
                   accumulated += '\n\n**Error:** ' + event.data;
+                  accumulatedRef.current = accumulated;
                   setStreamingContent(accumulated);
                   break;
                 }
@@ -346,6 +368,7 @@ export function ChatView({ sessionId, initialMessages = [], modelName, initialMo
         setIsStreaming(false);
         setStreamingSessionId('');
         setStreamingContent('');
+        accumulatedRef.current = '';
         setToolUses([]);
         setToolResults([]);
         setStreamingToolOutput('');

@@ -289,13 +289,10 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           switch (message.type) {
             case 'assistant': {
               const assistantMsg = message as SDKAssistantMessage;
+              // Text deltas are handled by stream_event for real-time streaming.
+              // Only track lastAssistantText here and process tool_use blocks.
               const text = extractTextFromMessage(assistantMsg);
-              if (text && text !== lastAssistantText) {
-                // Send the new delta
-                const delta = text.slice(lastAssistantText.length);
-                if (delta) {
-                  controller.enqueue(formatSSE({ type: 'text', data: delta }));
-                }
+              if (text) {
                 lastAssistantText = text;
               }
 
