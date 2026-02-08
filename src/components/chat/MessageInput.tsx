@@ -280,7 +280,7 @@ export function MessageInput({
         }
       }
     },
-    [popoverMode, popoverItems, selectedIndex, insertItem, closePopover]
+    [popoverMode, popoverItems, popoverFilter, selectedIndex, insertItem, closePopover]
   );
 
   // Click outside to close popover
