@@ -1,13 +1,64 @@
 import { NextRequest } from 'next/server';
 import { streamClaude } from '@/lib/claude-client';
 import { addMessage, getMessages, getSession, updateSessionTitle, updateSdkSessionId, updateSessionModel, updateSessionProvider, updateSessionProviderId, getSetting, getProvider, getDefaultProviderId, acquireSessionLock, releaseSessionLock, setSessionRuntimeStatus, syncSdkTasks } from '@/lib/db';
-import type { SendMessageRequest, SSEEvent, TokenUsage, MessageContentBlock, FileAttachment } from '@/types';
+import type { SendMessageRequest, SSEEvent, TokenUsage, MessageContentBlock, FileAttachment, ApiProvider } from '@/types';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const LEGACY_PROVIDER_MODEL_ALIASES: Record<string, Record<string, string>> = {
+  'https://api.z.ai/api/anthropic': {
+    sonnet: 'glm-4.7',
+    opus: 'glm-5',
+    haiku: 'glm-4.5-air',
+  },
+  'https://open.bigmodel.cn/api/anthropic': {
+    sonnet: 'glm-4.7',
+    opus: 'glm-5',
+    haiku: 'glm-4.5-air',
+  },
+  'https://api.kimi.com/coding': {
+    sonnet: 'kimi-k2.5',
+    opus: 'kimi-k2.5',
+    haiku: 'kimi-k2.5',
+  },
+  'https://api.moonshot.ai/anthropic': {
+    sonnet: 'kimi-k2.5',
+    opus: 'kimi-k2.5',
+    haiku: 'kimi-k2.5',
+  },
+  'https://api.moonshot.cn/anthropic': {
+    sonnet: 'kimi-k2.5',
+    opus: 'kimi-k2.5',
+    haiku: 'kimi-k2.5',
+  },
+  'https://api.minimaxi.com/anthropic': {
+    sonnet: 'MiniMax-M2.5',
+    opus: 'MiniMax-M2.5',
+    haiku: 'MiniMax-M2.5',
+  },
+  'https://api.minimax.io/anthropic': {
+    sonnet: 'MiniMax-M2.5',
+    opus: 'MiniMax-M2.5',
+    haiku: 'MiniMax-M2.5',
+  },
+};
+
+function normalizeProviderBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function resolveProviderModelAlias(model: string | undefined, provider?: ApiProvider): string | undefined {
+  if (!model || !provider?.base_url) return model;
+
+  const aliasMap = LEGACY_PROVIDER_MODEL_ALIASES[normalizeProviderBaseUrl(provider.base_url)];
+  if (!aliasMap) return model;
+
+  return aliasMap[model] || model;
+}
 
 export async function POST(request: NextRequest) {
   let activeSessionId: string | undefined;
@@ -75,16 +126,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Determine model: request override > session model > default setting
-    const effectiveModel = model || session.model || getSetting('default_model') || undefined;
-
-    // Persist model and provider to session so usage stats can group by model+provider.
-    // This runs on every message but the DB writes are cheap (single UPDATE by PK).
-    if (effectiveModel && effectiveModel !== session.model) {
-      updateSessionModel(session_id, effectiveModel);
-    }
+    const requestedModel = model || session.model || getSetting('default_model') || undefined;
 
     // Resolve provider: explicit provider_id > default_provider_id > environment variables
-    let resolvedProvider: import('@/types').ApiProvider | undefined;
+    let resolvedProvider: ApiProvider | undefined;
     const effectiveProviderId = provider_id || session.provider_id || '';
     if (effectiveProviderId && effectiveProviderId !== 'env') {
       resolvedProvider = getProvider(effectiveProviderId);
@@ -103,6 +148,16 @@ export async function POST(request: NextRequest) {
       }
     }
     // effectiveProviderId === 'env' → resolvedProvider stays undefined → uses env vars
+
+    // Backward compatibility: migrate legacy Claude aliases (sonnet/opus/haiku)
+    // to provider-native model IDs for third-party Anthropic-compatible endpoints.
+    const effectiveModel = resolveProviderModelAlias(requestedModel, resolvedProvider);
+
+    // Persist model and provider to session so usage stats can group by model+provider.
+    // This runs on every message but the DB writes are cheap (single UPDATE by PK).
+    if (effectiveModel && effectiveModel !== session.model) {
+      updateSessionModel(session_id, effectiveModel);
+    }
 
     const providerName = resolvedProvider?.name || '';
     if (providerName !== (session.provider_name || '')) {
